@@ -1,0 +1,12 @@
+# 核心资产：开启 LFS 和 独占锁定
+*.uasset filter=lfs diff=lfs merge=binary -text lockable
+*.umap filter=lfs diff=lfs merge=binary -text lockable
+# 外部美术资源
+*.fbx filter=lfs diff=lfs merge=binary -text
+*.psd filter=lfs diff=lfs merge=binary -text
+*.png filter=lfs diff=lfs merge=binary -text
+*.wav filter=lfs diff=lfs merge=binary -text
+*.mp4 filter=lfs diff=lfs merge=binary -text
+data/** filter=lfs diff=lfs merge=lfs -text
+Unreal-5-Project/** filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
