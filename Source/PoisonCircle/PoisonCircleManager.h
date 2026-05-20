@@ -86,16 +86,26 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug")
 	bool bDrawDebugCircle = true;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug")
+	bool bDrawDebugTargetCircle = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug", meta = (ClampMin = "8"))
 	int32 DebugSegments = 96;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug", meta = (ClampMin = "0.0"))
 	float DebugLineThickness = 8.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug")
+	FColor SafeZoneColor = FColor::Cyan;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug")
+	FColor TargetZoneColor = FColor::White;
+
 private:
 	void AdvanceShrink(float DeltaSeconds);
 	void ApplyOutsideCircleDamage();
 	void DrawCurrentCircle() const;
+	void DrawTargetCircle() const;
 	void PrepareCurrentEvent();
 
 	int32 CurrentEventIndex = INDEX_NONE;

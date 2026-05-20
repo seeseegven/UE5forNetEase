@@ -67,6 +67,11 @@ void APoisonCircleManager::Tick(float DeltaSeconds)
 	{
 		DrawCurrentCircle();
 	}
+
+	if (bDrawDebugTargetCircle)
+	{
+		DrawTargetCircle();
+	}
 }
 
 void APoisonCircleManager::StartRound()
@@ -166,11 +171,41 @@ void APoisonCircleManager::DrawCurrentCircle() const
 		DrawCenter,
 		CurrentRadius,
 		DebugSegments,
-		FColor::Green,
+		SafeZoneColor,
 		false,
 		0.0f,
 		0,
 		DebugLineThickness,
+		FVector::ForwardVector,
+		FVector::RightVector,
+		false);
+}
+
+void APoisonCircleManager::DrawTargetCircle() const
+{
+	if (!ShrinkEvents.IsValidIndex(CurrentEventIndex))
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const FPoisonCircleShrinkEvent& Event = ShrinkEvents[CurrentEventIndex];
+	const FVector DrawCenter(Event.TargetCenter.X, Event.TargetCenter.Y, GetActorLocation().Z);
+	DrawDebugCircle(
+		World,
+		DrawCenter,
+		Event.EndRadius,
+		DebugSegments,
+		TargetZoneColor,
+		false,
+		0.0f,
+		0,
+		DebugLineThickness * 0.5f,
 		FVector::ForwardVector,
 		FVector::RightVector,
 		false);
