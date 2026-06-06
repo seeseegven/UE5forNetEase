@@ -1,0 +1,399 @@
+Stone Golem（石头人）— 行为树构建完整步骤
+
+【概述】
+角色定位：重型坦克型近战怪物，高血量、低速度、少攻击手段
+现有资产：骨骼网格(SKM_Stone_Golem)、骨骼(SK_Stone_Golem_Skeleton)、
+          物理资产(PA_Stone_Golem_PhysicsAsset)、三种材质实例、纹理集、
+          闲置/行走/奔跑/跳跃(全套)动画(ThirdPerson模板)、
+          演示关卡(Stone_Golem.umap)
+缺失资产：动画蓝图、Character BP、AIController、Blackboard、BehaviorTree、
+          Task、Decorator、攻击动画、攻击蒙太奇
+特殊问题：石头人没有攻击动画和受击动画，需要从零创建或复用模板动画
+
+一、创建资产清单
+
+需在 Content/Found/Monsters/Stone_Golem/ 下创建：
+
+Stone_Golem/
+├── mesh/                                # 原有
+│   ├── SKM_Stone_Golem.uasset           # 原有
+│   ├── SK_Stone_Golem_Skeleton.uasset   # 原有
+│   └── PA_Stone_Golem_PhysicsAsset.uasset # 原有
+├── materials/                           # 原有
+├── textures/                            # 原有
+├── map/                                 # 原有
+│   ├── Stone_Golem.umap                 # 原有
+│   └── Stone_Golem_BuiltData.uasset     # 原有
+├── demo/                                # 原有
+│   └── animations/                      # 原有
+│       ├── ThirdPersonIdle.uasset       # 原有
+│       ├── ThirdPersonWalk.uasset       # 原有
+│       ├── ThirdPersonRun.uasset        # 原有
+│       ├── ThirdPerson_Jump.uasset      # 原有
+│       ├── ThirdPersonJump_Start.uasset # 原有
+│       ├── ThirdPersonJump_Loop.uasset  # 原有
+│       └── ThirdPersonJump_End.uasset   # 原有
+├── animations/                          # ★新建目录（行为树用动画）
+│   ├── ABP_StoneGolem.uasset           # ★新建：动画蓝图
+│   └── AM_StoneGolem_Attack_Stomp.uasset # ★新建：震地攻击蒙太奇
+├── Blueprints/                          # ★新建目录
+│   ├── BP_StoneGolem_Character.uasset   # ★新建：Character
+│   └── BP_StoneGolem_AIController.uasset# ★新建：AIController
+├── AI/                                  # ★新建目录
+│   ├── BB_StoneGolem.uasset            # ★新建：Blackboard
+│   ├── BT_StoneGolem.uasset            # ★新建：BehaviorTree
+│   ├── Tasks/                           # ★新建目录
+│   │   ├── BTT_StoneGolem_Stomp.uasset
+│   │   ├── BTT_StoneGolem_GroundSlam.uasset
+│   │   ├── BTT_StoneGolem_PatrolGetPoint.uasset
+│   │   └── BTT_StoneGolem_SetState.uasset
+│   └── Decorators/                      # ★新建目录
+│       ├── BTD_IsInRange.uasset
+│       └── BTD_HasTarget.uasset
+└── VFX/                                 # ★新建目录（可选，震地特效）
+    └── NS_StoneGolem_Stomp.uasset       # ★新建：Niagara震地粒子
+
+共需创建: 2+2+1+1+4+2+0~1 = 12~13 个新资产
+其中 ABP_StoneGolem 和 AM_StoneGolem_Attack_Stomp 为必要动画资产
+
+二、Blackboard 设计（BB_StoneGolem）
+
+Key Name          | 类型           | 初始值    | 说明
+------------------|----------------|-----------|------------------------------
+TargetActor       | Object (Actor) | None      | 攻击目标（玩家）
+MoveLocation      | Vector         | (0,0,0)   | 移动目的地
+MonsterState      | Enum (UInt8)   | 0 (Idle)  | 行为状态
+AttackRange       | Float          | 250.0     | 近战攻击触发距离
+StompRange        | Float          | 350.0     | 震地AOE范围
+ChaseRange        | Float          | 1000.0    | 追击触发距离
+CanAttack         | Bool           | true      | 攻击就绪
+IsDead            | Bool           | false     | 是否死亡
+HomeLocation      | Vector         | (0,0,0)   | 巡逻原点
+PatrolRadius      | Float          | 600.0     | 巡逻半径（范围小，走得慢）
+AttackCooldown    | Float          | 3.0       | 攻击冷却（慢但重）
+StompCooldown     | Float          | 5.0       | 震地冷却（大招）
+HasUsedStomp      | Bool           | false     | 本场战斗是否用过震地
+
+MonsterState 枚举：
+  0 = Idle（待机）
+  1 = Patrol（巡逻）
+  2 = Chase（追击）
+  3 = Attack_Stomp（震地攻击）
+  4 = Attack_Basic（基础近战）
+  5 = Hurt（受击）
+  6 = Dead（死亡）
+
+三、行为树结构（BT_StoneGolem）
+
+Root
+└── Selector（优先级从左到右）
+    │
+    ├── [1] Sequence ── 死亡处理
+    │   ├── Decorator: IsDead == true
+    │   ├── [Task] Stop Movement
+    │   ├── [Task] SetState → 6 (Dead)
+    │   ├── [Task] 播放死亡动画（如果没有死亡动画：直接 Ragdoll）
+    │   │   【方案A】有死亡动画 → Play Montage
+    │   │   【方案B】无死亡动画 → Set Simulate Physics = true → 石头人碎掉/滚落
+    │   ├── [Task] Wait: 5.0s（尸体停留）
+    │   └── [Task] 延迟销毁 Actor
+    │
+    ├── [2] Sequence ── 受击反应
+    │   ├── Decorator: 受到伤害（HurtTriggered == true）
+    │   ├── [Task] SetState → 5 (Hurt)
+    │   ├── [Task] 播放受击反馈：
+    │   │   【方案A】有受击动画 → Play Montage
+    │   │   【方案B】无受击动画 → Play Timeline 抖动 + 材质闪烁（红色Flash）
+    │   │   推荐方案B：石头人应该"硬"，不怎么晃动
+    │   │   - 创建 Timeline: 0→0.1s 后移10单位, 0.1s→0.2s 回原位
+    │   │   - Dynamic Material Instance → Set Scalar Parameter "DamageFlash" = 1
+    │   │   - 0.3s后恢复 "DamageFlash" = 0
+    │   ├── [Task] Wait: 0.3s（短暂硬直）
+    │   └── [Task] HurtTriggered = false
+    │
+    ├── [3] Selector ── 战斗行为
+    │   ├── Decorator: TargetActor != None
+    │   │
+    │   ├── [Service] 每0.3s更新距离
+    │   │
+    │   ├── [4] Sequence ── 震地攻击（首次进入战斗，CD就绪时使用）
+    │   │   ├── Decorator: IsInRange(TargetActor, StompRange)
+    │   │   ├── Decorator: HasUsedStomp == false（首次使用）
+    │   │   ├── Decorator: CanAttack == true
+    │   │   ├── [Task] Stop Movement
+    │   │   ├── [Task] RotateToFace: TargetActor
+    │   │   ├── [Task] SetState → 3 (Attack_Stomp)
+    │   │   ├── [Task] BTT_StoneGolem_Stomp:
+    │   │   │   1. 播放震地蒙太奇 AM_StoneGolem_Attack_Stomp
+    │   │   │   2. 蒙太奇中 AnimNotify 触发:
+    │   │   │      - 震地特效 (Niagara NS_StoneGolem_Stomp)
+    │   │   │      - 屏幕震动 (Play World Camera Shake)
+    │   │   │      - SphereOverlapActors(StompRange) → AOE伤害
+    │   │   │      - ApplyDamage x 范围内所有玩家
+    │   │   ├── [Task] Wait: StompCooldown (5.0s)
+    │   │   ├── [Task] Set HasUsedStomp = true（本场战斗只用一次）
+    │   │   └── [Task] Set CanAttack = false → 进入基础攻击冷却
+    │   │
+    │   ├── [5] Sequence ── 基础近战
+    │   │   ├── Decorator: IsInRange(TargetActor, AttackRange)
+    │   │   ├── Decorator: CanAttack == true
+    │   │   ├── [Task] Stop Movement
+    │   │   ├── [Task] RotateToFace: TargetActor
+    │   │   ├── [Task] SetState → 4 (Attack_Basic)
+    │   │   ├── [Task] BTT_StoneGolem_GroundSlam:
+    │   │   │   1. 播放近战攻击蒙太奇（如果没有蒙太奇：直接做射线/球检测）
+    │   │   │   2. 前摇: 暂停0.5s（举起拳头的感觉）
+    │   │   │   3. 攻击帧: SphereOverlapActors(AttackRange) → ApplyDamage
+    │   │   │   4. 后摇: 暂停0.5s
+    │   │   ├── [Task] Wait: AttackCooldown (3.0s)
+    │   │   └── [Task] Set CanAttack = true
+    │   │
+    │   ├── [6] Sequence ── 追击
+    │   │   ├── Decorator: IsInRange(TargetActor, ChaseRange)
+    │   │   ├── [Task] SetState → 2 (Chase)
+    │   │   └── [Task] MoveTo: TargetActor
+    │   │       AcceptableRadius = AttackRange * 0.7
+    │   │       注意：MaxWalkSpeed 在追击时仅设为 300（走得慢）
+    │   │       体现重型怪物的"压迫感"——虽慢但不放弃
+    │   │
+    │   └── [7] Sequence ── 丢失目标
+    │       ├── [Task] Wait: 2.0s（再等2秒看目标会不会回来）
+    │       ├── [Task] 如果仍无目标 → Clear TargetActor
+    │       └── [Task] Set HasUsedStomp = false（重置震地CD）
+    │
+    ├── [8] Sequence ── 巡逻
+    │   ├── [Task] SetState → 1 (Patrol)
+    │   ├── [Task] BTT_StoneGolem_PatrolGetPoint:
+    │   │   GetRandomReachablePointInRadius(HomeLocation, PatrolRadius)
+    │   │   → 写入 MoveLocation
+    │   ├── [Task] MoveTo: MoveLocation（慢走，体现沉重感）
+    │   ├── [Task] RotateToFace: 巡逻点方向
+    │   ├── [Task] Wait: Random(2.0s, 5.0s)（石头人停顿时长更长）
+    │   └── Loop back
+    │
+    └── [9] Sequence ── 默认待机
+        ├── [Task] SetState → 0 (Idle)
+        └── [Task] Wait: 0.5s
+
+四、攻击动画方案（石头人特有的挑战）
+
+石头人没有现成的攻击动画，有以下解决方案，按推荐度排序：
+
+【方案A：复用跳跃动画做震地】（最简单，快速出效果）
+  1. 用 ThirdPersonJump_Start（蓄力下蹲）+ ThirdPerson_Jump（起跳）做攻击前摇
+  2. 实际不移动（取消位移）
+  3. 在"落地"帧：触发震地特效 + 伤害
+  4. 用 ThirdPersonJump_End 做攻击后摇
+  5. 合并为 AM_StoneGolem_Attack_Stomp 蒙太奇
+
+【方案B：用 Sequencer 手K攻击动画】
+  1. 在 Sequencer 中打开 SKM_Stone_Golem
+  2. 手动 Key 两个攻击姿态：
+     - 震地: 双手举起 → 砸地 → 恢复站立（约2秒）
+     - 挥拳: 右手后摆 → 前挥 → 恢复（约1.5秒）
+  3. 导出为 Animation Sequence → 转为 Montage
+
+【方案C：从 Fab/Marketplace 找免费石头人攻击动画】
+  搜索 "Stone Golem Attack Animation" → 导入使用
+
+【方案D：纯逻辑攻击（无动画，但不推荐）】
+  完全不做动画，只在 Task 中做碰撞检测 + 特效 + 伤害。
+  简单但缺少视觉反馈，作为临时方案可接受。
+
+推荐先用方案A快速验证行为树逻辑，后续再用方案B或C打磨。
+
+五、关键 Task 详细设计
+
+【BTT_StoneGolem_Stomp】震地AOE攻击
+  事件: Receive Execute AI
+  1. 面向 TargetActor
+  2. 播放 AM_StoneGolem_Attack_Stomp 蒙太奇
+  3. 在 AnimNotify 帧触发：
+     a. Niagara: SpawnSystemAtLocation(NS_StoneGolem_Stomp, Pawn.Location)
+        - 如果没有 Niagara 资产：用 SpawnEmitter 代替
+        - 粒子效果：从脚底扩散的冲击波、碎石飞溅、尘土扬起
+     b. Camera Shake: Get Player Camera Manager → Start Camera Shake
+        - 震感：大振幅、低频（体现重型怪物）
+     c. AOE 伤害检测:
+        SphereOverlapActors(Pawn.Location, StompRange)
+        - 过滤: 非自身、玩家角色
+        - 伤害: StompDamage = 50.0（高伤害）
+        - 击退: LaunchCharacter(Target, KnockbackDirection * 500, ...)
+          但 LaunchCharacter 对 Character 有效，直接调用
+     d. 短暂暂停 Montage 0.2s（"砸地那一瞬"的停顿感）
+  4. Montage 结束 → Finish Execute
+
+【BTT_StoneGolem_GroundSlam】基础近战攻击
+  事件: Receive Execute AI
+  1. 面向 TargetActor
+  2. 如果没有攻击蒙太奇：直接用 Timer 驱动攻击节奏
+     a. t=0.0s: 设置 bIsAttacking = true（ABP 中触发攻击姿态混合）
+     b. t=0.3s: 前摇结束，攻击帧
+        - SphereOverlapActors(AttackRange) → BasicAttackDamage (25.0)
+        - 命中特效: 碎石粒子
+     c. t=0.8s: 后摇结束
+     d. t=1.0s: Finish Execute
+  3. 如果有蒙太奇：正常播放 Montage + AnimNotify
+
+  这种 Timer 方式的好处是无需任何动画资产就能测试战斗逻辑。
+
+【BTT_StoneGolem_PatrolGetPoint】获取巡逻点
+  与 Stickman 逻辑相同。
+  区别：PatrolRadius 更小(600)，因为石头人走得慢，范围太大走不完。
+
+六、BP_StoneGolem_Character 关键配置
+
+【组件】
+  - SkeletalMesh: SKM_Stone_Golem
+  - AnimClass: ABP_StoneGolem（需新建）
+  - CapsuleComponent: 默认（可适当调大，体现体型）
+  - AIPerceptionComponent: 添加
+  - CharacterMovementComponent: 默认
+
+【变量】
+  - Health: Float = 500.0（高血量，三只怪物中最耐打）
+  - MaxHealth: Float = 500.0
+  - BasicAttackDamage: Float = 25.0
+  - StompDamage: Float = 50.0
+  - MoveSpeed_Patrol: Float = 150.0（很慢）
+  - MoveSpeed_Chase: Float = 300.0（追击也不快，但比巡逻快）
+  - StompKnockbackForce: Float = 500.0
+  - bIsAttacking: Bool = false
+  - HurtTriggered: Bool = false
+
+【CharacterMovement 调参】
+  - Max Walk Speed: 300.0
+  - Max Acceleration: 1024.0（加速慢，迟钝感）
+  - Braking Deceleration Walking: 512.0（刹车也慢）
+  - Ground Friction: 8.0（高摩擦，体现沉重）
+  - Mass: 500.0（高重量，难以被击退）
+
+【AIPerceptionComponent 配置】
+  AI Sight Config:
+    - Sight Radius: 800.0（短视野：石头人"视力差"）
+    - Lose Sight Radius: 1000.0
+    - Peripheral Vision Half Angle: 180°（但360°感知 — 石头人不需要转头）
+      注意：UE Sight Config 最大半角是180°（即全方向）
+  AI Hearing Config:
+    - Hearing Range: 600.0（听觉也差）
+
+  这个配置体现"迟钝但一旦发现就追到底"的特性。
+
+【接口实现】
+  - BPI_Damageable:
+      ApplyDamage(Damage) → Health -= Damage
+      → HurtTriggered = true
+      → 如果 Health <= 0 → IsDead = true
+      → 注意：给石头人加一个 DamageMultiplier 变量 = 0.7
+        用伤害减免体现"石头"的坚硬
+
+七、动画蓝图 ABP_StoneGolem 设计
+
+石头人目前没有动画蓝图，需新建（Content Browser 右键 → Animation → Animation Blueprint）：
+  - Target Skeleton: SK_Stone_Golem_Skeleton
+  - 模板: 使用 ThirdPerson 模板即可
+
+在 AnimGraph 中：
+  - Idle/Run 状态机: 通过 Speed 变量驱动
+    Speed > 10 → Walk/Run
+    Speed < 10 → Idle
+  - Speed 变量: 在 Event Blueprint Update Animation 中获取 Pawn Velocity
+  - bIsDead 变量: 死亡 → 死亡姿势 / Ragdoll
+
+这是基本配置，后续可以添加攻击混合空间等。
+
+八、BP_StoneGolem_AIController 配置
+
+【Class Defaults】
+  AI → Behavior Tree: BT_StoneGolem
+
+【Event Graph】
+  Event BeginPlay:
+    1. RunBehaviorTree(BT_StoneGolem)
+    2. Delay(0.3s) → Set Blackboard: HomeLocation = Pawn.WorldLocation
+    3. Set Blackboard: HasUsedStomp = false
+
+九、VFX（可选但推荐）
+
+石头人的视觉特色在于"有冲击力的攻击"。推荐创建简单的 Niagara 特效：
+
+【NS_StoneGolem_Stomp】震地冲击波
+  - Niagara System 模板: Empty
+  - Emitter: Sprite
+  - 粒子行为:
+    - 从中心点环形扩散
+    - 初始大小: 小圆环 → 扩散到 StompRange 半径 → 消失
+    - 颜色: 灰褐色（尘土）/ 灰色（碎石）
+    - 持续时间: 0.5s
+    - 地面贴合: 粒子Y=0
+
+  如果不会 Niagara：Unreal 内置的 Cascade 粒子系统也可用：
+  - 右键 → FX → Cascade Particle System
+  - 用已有的 VFX 贴图（如 noise、radial）
+
+十、独特设计要点
+
+1.【重型感】石头人的核心特色是"重、慢、狠"：
+   - 移动速度是三只怪物中最慢的(150 patrol / 300 chase)
+   - 但攻击力最高(25基础/50震地)
+   - 血量最高(500)
+   - 通过 CharacterMovement 参数（Mass、Friction、Braking）体现重量感
+
+2.【震地AOE】石头人的标志性技能：
+   - 首次进入战斗时触发
+   - 大范围 AOE 伤害 + 震屏 + 粒子特效
+   - CD 长(5s)，每场战斗仅一次（HasUsedStomp）
+   - 击中后可以加一个短暂 Stun 效果(Set Custom Time Dilation = 0.2, 持续0.5s)
+
+3.【无动画后备方案】因为缺少攻击动画，设计了 Timer 驱动的纯逻辑攻击。
+   这保证了行为树可以先跑起来，动画后续补。
+
+4.【锐利感知 vs 钝感设计冲突】UE 的 Sight 最大半角只能到180°，
+   而360°感知需要额外的设置。简化做法：设180°半角 + 短距离(800)，
+   实际上覆盖前方半球，已经够用。
+
+5.【可以设计"弱点"】石头人背后可以有一个弱点碰撞体，
+   从背后的攻击伤害 x2，增加战斗策略性。但这属于进阶设计，先不做。
+
+十一、关卡集成
+
+石头人已有关卡: Content/Found/Monsters/Stone_Golem/map/Stone_Golem.umap
+
+在这个关卡中测试：
+  1. 放置 Nav Mesh Bounds Volume
+  2. 拖入 BP_StoneGolem_Character
+  3. 按 P 检查 NavMesh
+  4. 由于石头人 Capsule 较大，NavMesh 可能需要调整：
+     Navigation System → Agent Radius / Agent Height 调大
+  5. 如果想在战斗关卡测试，可以在 Content/Variant_Combat/Lvl_Combat.umap
+     中放置一个石头人
+
+十二、构建顺序
+
+第1步: 创建 ABP_StoneGolem（动画蓝图，用 ThirdPerson 模板）
+第2步: 如果走方案A，创建 AM_StoneGolem_Attack_Stomp（震地蒙太奇）
+第3步: 创建 BB_StoneGolem (Blackboard)
+第4步: 创建 BP_StoneGolem_AIController
+第5步: 创建 BP_StoneGolem_Character（配置组件、变量、感知、Movement）
+第6步: 创建 Task（Stomp、GroundSlam、PatrolGetPoint、SetState）
+第7步: 创建 Decorator（IsInRange、HasTarget）
+第8步: 创建 BT_StoneGolem (BehaviorTree) → 搭树
+第9步: 在 Stone_Golem 关卡中放置 NavMesh → 测试基本巡逻和追击
+第10步: 测试攻击逻辑（先用 Timer 方案，无需动画）
+第11步: （可选）创建 NS_StoneGolem_Stomp 震地特效
+第12步: 调参（血量500太高？速度300太慢？根据实际体验调整）
+
+十三、三只怪物对比总结
+
+维度          | Stickman      | Sabertooth       | Stone Golem
+--------------|---------------|------------------|----------------
+角色定位      | 杂兵          | 精英怪           | Boss/小Boss
+血量          | 80 (低)       | 200 (中)         | 500 (高)
+攻击力        | 10            | 15~40            | 25~50
+移动速度      | 200/450       | 300/600          | 150/300
+攻击方式      | 二连击(近战)  | 咬/爪/射击/扑跃  | 震地AOE/基础近战
+视野范围      | 1200, 60°     | 2000, 90°        | 800, 180°
+特色          | 受击方向选择  | 扑跃+远程混合    | 震地+高血量+坚硬
+动画齐全度    | ★★★★★(最全)  | ★★★★★(全)       | ★★☆☆☆(缺攻击)
+实现难度      | ★☆☆☆☆(最低)  | ★★★☆☆(中)       | ★★★★☆(缺资产)
+推荐实现顺序  | 第1个         | 第2个            | 第3个

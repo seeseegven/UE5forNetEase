@@ -1,0 +1,396 @@
+Sabertooth（机械剑齿虎 / SteampunkCat）— 行为树构建完整步骤
+
+【概述】
+角色定位：激进型近战+远程混合怪物
+现有资产：完整骨骼网格(SKM_SteampunkCat)、动画蓝图(ABP_SteampunkCat)、
+          闲置/行走/奔跑/跳跃/啃咬/爪击/远程射击/受击/死亡动画、控制绑定、
+          三种材质变体(Black/Bronze/Stylized)、攻击射击蒙太奇、VFX(施法/命中/预施法)
+缺失资产：Character BP、AIController、Blackboard、BehaviorTree、Task、Decorator、Service
+
+一、创建资产清单
+
+需在 Content/Found/Monsters/Sabertooth/ 下创建以下目录和资产：
+
+Sabertooth/
+├── Blueprints/                          # 原有
+│   ├── ABP_SteampunkCat.uasset          # 原有（动画蓝图）
+│   ├── BP_SteampunkCat.uasset           # 原有（旧蓝图，可作参考）
+│   ├── BP_CameraShake.uasset            # 原有
+│   ├── BP_JuggleCameraShake.uasset      # 原有
+│   ├── GM_SteampunkCat.uasset           # 原有
+│   ├── BP_Sabertooth_Character.uasset   # ★新建：Character类蓝图
+│   └── BP_Sabertooth_AIController.uasset# ★新建：AIController类蓝图
+├── AI/                                  # ★新建目录
+│   ├── BB_Sabertooth.uasset             # ★新建：Blackboard
+│   ├── BT_Sabertooth.uasset             # ★新建：BehaviorTree
+│   ├── Tasks/                           # ★新建目录
+│   │   ├── BTT_Sabertooth_Bite.uasset
+│   │   ├── BTT_Sabertooth_Claw.uasset
+│   │   ├── BTT_Sabertooth_Shot.uasset
+│   │   ├── BTT_Sabertooth_Pounce.uasset
+│   │   ├── BTT_Sabertooth_SetState.uasset
+│   │   └── BTT_Sabertooth_FindTarget.uasset
+│   ├── Decorators/                      # ★新建目录
+│   │   ├── BTD_IsInRange.uasset
+│   │   └── BTD_IsAlive.uasset
+│   └── Services/                        # ★新建目录
+│       └── BTS_Sabertooth_UpdatePerception.uasset
+├── Animations/                          # 原有
+├── Mesh/                                # 原有
+├── Materials/                           # 原有
+├── Textures/                            # 原有
+├── VFX/                                 # 原有
+├── Levels/                              # 原有
+├── Demo/                                # 原有
+└── Sequence/                            # 原有
+
+共需创建 13 个新资产。
+
+二、Blackboard 设计（BB_Sabertooth）
+
+Key Name          | 类型           | 初始值    | 说明
+------------------|----------------|-----------|------------------------------
+TargetActor       | Object (Actor) | None      | 当前攻击目标（玩家）
+MoveLocation      | Vector         | (0,0,0)   | 移动目的地
+MonsterState      | Enum (UInt8)   | 0 (Idle)  | 当前行为状态
+AttackRange_Bite  | Float          | 200.0     | 啃咬攻击距离
+AttackRange_Claw  | Float          | 250.0     | 爪击攻击距离
+AttackRange_Shot  | Float          | 1500.0    | 远程射击距离
+AttackRange_Pounce| Float          | 800.0     | 扑跃触发距离
+CanAttack         | Bool           | true      | 是否可以攻击
+IsDead            | Bool           | false     | 是否已死亡
+HomeLocation      | Vector         | (0,0,0)   | 出生/巡逻原点
+PatrolRadius      | Float          | 1000.0    | 巡逻半径
+WaitTime          | Float          | 2.0       | 攻击后等待冷却
+
+MonsterState 枚举定义：
+  0 = Idle（待机）
+  1 = Patrol（巡逻）
+  2 = Chase（追击）
+  3 = Pounce（扑跃）
+  4 = Attack_Bite（啃咬）
+  5 = Attack_Claw（爪击）
+  6 = Attack_Shot（远程射击）
+  7 = Hurt（受击）
+  8 = Dead（死亡）
+
+三、行为树结构（BT_Sabertooth）
+
+Root
+└── Selector（优先级从左到右，左边先执行）
+    │
+    ├── [1] Sequence ── 死亡处理（最高优先级）
+    │   ├── Decorator: Blackboard IsDead == true
+    │   ├── [Task] 停止移动 (Stop Movement)
+    │   ├── [Task] SetState → 8 (Dead)
+    │   ├── [Task] Play Montage: Anim_SteampunkCat_Death_1 或 Death_2（随机）
+    │   ├── [Task] Wait: 3.0s
+    │   └── [Task] 销毁自身 或 关闭碰撞 + 隐藏网格体（保留尸体）
+    │
+    ├── [2] Sequence ── 受伤反应
+    │   ├── Decorator: 刚受到伤害（自定义 Decorator 监听 OnDamage）
+    │   ├── [Task] 暂停当前行为
+    │   ├── [Task] SetState → 7 (Hurt)
+    │   ├── [Task] Play Montage: Anim_SteampunkCat_Attack_Hit
+    │   ├── [Task] Wait: 动画时长
+    │   └── [Task] 恢复行为
+    │
+    ├── [3] Selector ── 战斗行为（有目标时）
+    │   ├── Decorator: Blackboard TargetActor 不为空
+    │   │
+    │   ├── [Task] SetState → 2 (Chase)
+    │   └── Selector ── 根据距离选择攻击方式
+    │       │
+    │       ├── [4] Sequence ── 远程射击（最远距离优先）
+    │       │   ├── Decorator: BTD_IsInRange(TargetActor, AttackRange_Shot, 条件: 大于)
+    │       │   ├── [Task] RotateToFace: TargetActor（转向目标）
+    │       │   ├── [Task] SetState → 6 (Attack_Shot)
+    │       │   ├── [Task] BTT_Sabertooth_Shot: 播放射击动画 + 生成投射物/射线检测
+    │       │   ├── [Task] Wait: 2.0s 冷却
+    │       │   └── [Service] 每0.3s更新距离判断（太近则中断本Sequence）
+    │       │
+    │       ├── [5] Sequence ── 扑跃攻击（中距离）
+    │       │   ├── Decorator: BTD_IsInRange(TargetActor, AttackRange_Pounce)
+    │       │   ├── [Task] RotateToFace: TargetActor
+    │       │   ├── [Task] SetState → 3 (Pounce)
+    │       │   ├── [Task] BTT_Sabertooth_Pounce
+    │       │   │   ├── Play Montage: Anim_SteampunkCat_Jump_Start
+    │       │   │   ├── LaunchCharacter（向前上方弹射）
+    │       │   │   ├── Play Montage: Anim_SteampunkCat_Jump_Loop（空中循环）
+    │       │   │   ├── 落地检测: OnLanded 事件
+    │       │   │   ├── Play Montage: Anim_SteampunkCat_Jump_End
+    │       │   │   └── 落地时球形碰撞检测 → 对范围内玩家造成伤害
+    │       │   ├── [Task] Wait: 1.5s 落地硬直
+    │       │   └── [Service] 每0.3s检查落地（落地后中断）
+    │       │
+    │       ├── [6] Sequence ── 爪击（近中距离）
+    │       │   ├── Decorator: BTD_IsInRange(TargetActor, AttackRange_Claw)
+    │       │   ├── [Task] RotateToFace: TargetActor
+    │       │   ├── [Task] SetState → 5 (Attack_Claw)
+    │       │   ├── [Task] BTT_Sabertooth_Claw: Play Montage: Anim_SteampunkCat_Attack_Claw
+    │       │   │   播放期间用 AnimNotify 检测伤害时机
+    │       │   ├── [Task] Wait: 1.0s
+    │       │   └── [Service] 每0.3s更新距离（距离>AttackRange_Claw则中断）
+    │       │
+    │       ├── [7] Sequence ── 啃咬（最近距离）
+    │       │   ├── Decorator: BTD_IsInRange(TargetActor, AttackRange_Bite)
+    │       │   ├── [Task] RotateToFace: TargetActor
+    │       │   ├── [Task] SetState → 4 (Attack_Bite)
+    │       │   ├── [Task] BTT_Sabertooth_Bite: Play Montage: Anim_SteampunkCat_Attack_Bite
+    │       │   │   用 AnimNotify 触发伤害
+    │       │   ├── [Task] Wait: 1.2s
+    │       │   └── [Service] 每0.3s更新距离（距离>AttackRange_Bite则中断）
+    │       │
+    │       └── [8] Sequence ── 默认为接近目标
+    │           ├── [Task] MoveTo: TargetActor（可接受的半径 = AttackRange_Bite * 0.8）
+    │           └── [Task] Wait: 0.2s
+    │
+    ├── [9] Sequence ── 巡逻行为（无目标时）
+    │   ├── [Task] SetState → 1 (Patrol)
+    │   ├── [Task] 获取随机巡逻点（在 HomeLocation ± PatrolRadius 内）
+    │   │   方法：GetRandomReachablePointInRadius(from HomeLocation, radius PatrolRadius)
+    │   ├── [Task] MoveTo: 随机点
+    │   ├── [Task] RotateToFace: 移动方向（到达后再随机转个角度）
+    │   ├── [Task] Play Montage: Anim_SteampunkCat_Idle
+    │   └── [Task] Wait: Random(2.0s ~ 5.0s)
+    │
+    └── [10] Sequence ── 默认待机
+        ├── [Task] SetState → 0 (Idle)
+        └── [Task] Wait: 1.0s（循环回 Root）
+
+四、关键 Task 详细设计
+
+【BTT_Sabertooth_Bite】啃咬攻击
+  事件: Receive Execute AI
+  1. 获取 AIController → 获取 ControlledPawn → Cast to BP_Sabertooth_Character
+  2. 获取 Blackboard → 读取 TargetActor
+  3. 调用 Play Anim Montage: Anim_SteampunkCat_Attack_Bite
+     （如果已经有 Montage 资产，用 AM_SteampunkCat_Attack_Shot_Montage 的模式）
+     - 如果没有 Attack_Bite Montage，先创建一个：
+       Content Browser 右键 → Animation → Animation Montage
+       → Skeleton: SKM_SteampunkCat_Skeleton
+       → 拖入 Anim_SteampunkCat_Attack_Bite 动画
+       → 添加 Notify Track → 在攻击帧位置加 Notify: AN_AttackDamage
+  4. 绑定 OnMontageEnded / OnNotifyBegin 事件
+  5. AnimNotify 触发时：从 BP_Sabertooth_Character 获取攻击伤害值
+     → 球形碰撞检测(Pawn位置, AttackRange_Bite) → 过滤出玩家
+     → 调用 BPI_Damageable 接口 → ApplyDamage
+  6. Montage 结束 → Finish Execute (Success)
+
+【BTT_Sabertooth_Claw】爪击攻击
+  同上，使用 Anim_SteampunkCat_Attack_Claw 动画，范围用 AttackRange_Claw
+
+【BTT_Sabertooth_Shot】远程射击
+  事件: Receive Execute AI
+  1. 面向 TargetActor
+  2. 播放 Anim_SteampunkCat_Attack_Ready（前摇/瞄准）
+  3. Play Montage: Anim_SteampunkCat_Attack_Shot（发射）
+  4. 在 AnimNotify 帧：
+     - LineTrace from 嘴部Socket(如果有) 或 Pawn位置 → TargetActor位置
+     - 或 SpawnActor 生成一个弹丸投射物（如果有 VFX 资产更好）
+     - 命中 → 造成伤害（用 DamagePerShot 变量）
+     - 在命中点 SpawnEmitter: FX_Impact（已有的 VFX）
+  5. 冷却 Wait: 2.0s → Finish Execute
+
+【BTT_Sabertooth_Pounce】扑跃攻击
+  事件: Receive Execute AI
+  1. 面向 TargetActor
+  2. 播放 Anim_SteampunkCat_Jump_Start
+  3. 计算弹射方向：
+     Direction = (TargetActor.Location - Pawn.Location).GetSafeNormal()
+     LaunchVelocity = Direction * HorizontalSpeed + (0, 0, VerticalSpeed)
+  4. LaunchCharacter(LaunchVelocity, true, true)
+  5. 播放 Anim_SteampunkCat_Jump_Loop（空中循环）
+  6. 等待 OnLanded（角色落地事件）
+     - 在 BP_Sabertooth_Character 中绑定 OnLanded
+     - 设置 Blackboard Bool: "HasLanded" = true
+  7. 在 Task 中 Tick 监听 HasLanded
+  8. 落地 → 播放 Anim_SteampunkCat_Jump_End
+  9. 落地时 AOE 伤害：
+     SphereOverlapActors(落地位置, PounceDamageRadius, 伤害通道)
+     → 命中玩家 → ApplyDamage
+  10. Finish Execute
+
+【扩展层次结构建议】
+  为了复用，可以在 Content/Found/Monsters/Common/ 创建通用 Task 基类：
+  - BTT_BaseMonsterAttack: 通用攻击基类（Montage播放 + Notify伤害）
+  - BTT_BaseMonsterFindTarget: 通用寻敌（AIPerception → Blackboard）
+  - BTT_BaseMonsterPatrol: 通用巡逻（随机点移动）
+  然后 Sabertooth 的 Task 继承这些基类，只重写差异化部分。
+
+五、BP_Sabertooth_Character 关键配置
+
+【组件】
+  - SkeletalMesh: SKM_SteampunkCat
+  - AnimClass: ABP_SteampunkCat
+  - CapsuleComponent: 碰撞体（默认已有）
+  - AIPerceptionComponent（添加 → 搜索 "AIPerception"）
+  - CharacterMovementComponent（默认已有，在Class Defaults调参数）
+
+【变量】
+  - Health: Float = 200.0
+  - MaxHealth: Float = 200.0
+  - AttackDamage_Bite: Float = 20.0
+  - AttackDamage_Claw: Float = 15.0
+  - AttackDamage_Shot: Float = 25.0
+  - AttackDamage_Pounce: Float = 40.0
+  - MoveSpeed_Patrol: Float = 300.0
+  - MoveSpeed_Chase: Float = 600.0
+  - PounceDamageRadius: Float = 300.0
+  - PounceHorizontalSpeed: Float = 800.0
+  - PounceVerticalSpeed: Float = 500.0
+  - bCanPounce: Bool = true
+
+【AIPerceptionComponent 配置】
+  选中 AIPerceptionComponent → Details面板:
+    - AI Perception → Senses Config → 添加数组元素
+    - [0] AI Sight Config:
+        - Sight Radius: 2000.0
+        - Lose Sight Radius: 2500.0
+        - Peripheral Vision Half Angle: 90°
+        - Detection by Affiliation: Detect Enemies
+    - [1] AI Hearing Config:
+        - Hearing Range: 1500.0
+        - Detection by Affiliation: Detect Enemies
+    - 事件: On Target Perception Updated
+        → 如果感知到玩家 Stimulus.WasSuccessfullySensed() == true
+        → 设置 Blackboard: TargetActor = 玩家Actor
+        → 如果丢失感知
+        → 清除 Blackboard: TargetActor = None
+
+【CharacterMovement 调参（Class Defaults → Character Movement）】
+  - Max Walk Speed: 600.0（追击速度）
+  - Max Acceleration: 2048.0（加速快，体现敏捷）
+
+【接口实现】
+  - BPI_Damageable（已有）:
+      Event ApplyDamage(Damage, DamageType)
+      → Health -= Damage
+      → 如果 Health <= 0 → 设置 IsDead = true → 行为树自动切换死亡分支
+      → 如果 Health > 0 → 触发短暂受击（Hurt）
+  - BPI_Activatable（可选，用于战斗区域激活）
+
+【AnimBlueprint：ABP_SteampunkCat 配合说明】
+  需要在 ABP_SteampunkCat 中确保动画图表能响应以下变量（行为树通过 Character 传递），
+  通常 UE 的 MoveTo 会自动驱动速度 → AnimBP 的 Speed 变量自动计算：
+  - Speed（移动速度 → Walk/Run 切换）UE 已自动处理
+  - bIsDead → 死亡动画
+  - bIsAttacking → 攻击姿态混合
+  蓝图中使用 Event Blueprint Update Animation 获取 Pawn → 读取状态
+
+六、BP_Sabertooth_AIController 配置
+
+【Class Defaults】
+  - AI → Behavior Tree: BT_Sabertooth（设置默认行为树）
+  - 也可以不设默认，在 Event BeginPlay 中手动 Run Behavior Tree
+
+【Event Graph】
+  Event BeginPlay:
+    1. UAIBlueprintHelperLibrary::RunBehaviorTree(Self, BT_Sabertooth)
+    2. 获取 ControlledPawn → Set Blackboard Value: HomeLocation = Pawn.WorldLocation
+       （或者让 Designer 在关卡中手动放置时自动记录）
+
+  Event Possess(Pawn):
+    1. 初始化 Blackboard 默认值
+    2. 设置 MoveSpeed_Patrol
+
+  如果在 BehaviorTree 中不直接设置默认 BehaviorTree，在这里 Run Behavior Tree
+  一般推荐直接在 Class Defaults 中设置，更简洁。
+
+七、Decorator 详细设计
+
+【BTD_IsInRange】判断目标是否在指定距离范围内（新建 Blueprint Class 继承 BTDecorator_BlueprintBase）
+  节点: PerformConditionCheckAI
+  输入:
+    - 获取 Blackboard Key: TargetActor
+    - 获取 Blackboard Key: AttackRange（在 BT 中配置为对应的 Key）
+    - 获取 Pawn 位置
+  计算: Distance = VectorLength(TargetActor.Location - Pawn.Location)
+  返回: Distance <= AttackRange（或根据参数决定是大于还是小于）
+
+  对比方式（改进版）：
+    添加 Blackboard Key Selector 参数让设计师在 BT 编辑器中选择用哪个距离 Key
+    或者直接在 BT 中为每个距离层级创建不同的 Decorator 实例
+
+  简化做法：
+    UE 内置的 "Blackboard Based Condition" + "Distance Check" 组合使用
+    或者用 Composite Decorator
+
+【BTD_IsAlive】判断是否存活
+  节点: PerformConditionCheckAI
+  返回: IsDead == false（来自 Blackboard 或直接读 Pawn 的 Health）
+
+八、Service 详细设计
+
+【BTS_Sabertooth_UpdatePerception】定时更新战斗距离和状态（新建 Blueprint Class 继承 BTService_BlueprintBase）
+  节点: Receive Tick AI (Interval: 0.3s)
+
+  逻辑:
+    1. 读取 Blackboard: TargetActor
+    2. 如果 TargetActor 为空 → 不做处理
+    3. 如果 TargetActor 不为空:
+       - Distance = 计算距离
+       - 将 Distance 写入 Blackboard（可选: 新增 CurrentDistance Float Key）
+       - 如果 Distance <= AttackRange_Bite  → 不做处理（行为树自动选择咬/爪）
+       - 如果 Distance <= AttackRange_Claw  → 行为树自动选择爪击
+       - 如果 Distance <= AttackRange_Pounce → 行为树自动选择扑跃
+       - 如果 Distance <= AttackRange_Shot  → 行为树自动选择射击
+       - 如果 Distance > AttackRange_Shot     → MoveTo 接近目标
+    4. 可选: 如果 TargetActor 为空 且 MonsterState 是战斗状态 → 延迟3秒无目标则切回 Patrol
+
+  这个 Service 应挂载在战斗 Selector 节点上，Interval 0.3s 保证及时切换子行为
+
+九、行为树 Decorator 的 UE 内置便捷方式
+
+在行为树编辑器中，有更简便的方法实现距离判断，无需全部自定义：
+
+方法一：Composite Decorator（复合装饰器）
+  右键 Sequence → Add Decorator → Blackboard → "Blackboard Based Condition"
+    Key: TargetActor → NotSet → 条件: Is Set（确保有目标）
+  再加一个 Decorator → "Conditional Loop" 改为 "Condition" 型 → 选择 "Distance Check"
+    或者在 Sequence 上用 "Force Success" 配合 "Time Limit" 等
+
+方法二：复用 "MoveTo" 节点自带的 Acceptable Radius
+  直接在 MoveTo 节点上设置 Acceptable Radius = AttackRange_Bite * 0.8
+  UE 到达该半径即认为 MoveTo 完成，然后进入攻击 Sequence
+
+方法三：Simpler 的做法（推荐给新手）
+  不需要复杂的距离 Decorator 分支！
+  直接用 Selector + MoveTo(半径=最近攻击距离) + 攻击 Sequence：
+    ├── Selector（战斗）
+    │   ├── MoveTo: TargetActor, AcceptableRadius = 200
+    │   ├── Sequence（攻击循环）
+    │   │   ├── RotateToFace: TargetActor
+    │   │   ├── 随机选择: Bite / Claw / Shot / Pounce（其中一个）
+    │   │   └── Wait: 冷却
+  这样做的好处: 行为树结构简单，攻击方式随机化，通过 Blackboard CanAttack 控制
+
+十、关卡集成
+
+放置到关卡中的步骤：
+  1. 从 Content Browser 拖 BP_Sabertooth_Character 到关卡
+  2. 自动：UE 会为它生成 BP_Sabertooth_AIController
+  3. 确保关卡中有 NavMeshBoundsVolume:
+     放置 → 搜索 "Nav Mesh Bounds Volume"
+     → 拖入关卡 → 调整大小覆盖整个游戏区域
+     → 按 P 键查看 NavMesh 是否生成（绿色区域）
+  4. 如果怪物巡逻区域有限，在 BP_Sabertooth_Character 中设置 HomeLocation/PatrolRadius
+
+测试方法：
+  - 运行 PIE（Play In Editor）
+  - 控制台下输入: ShowDebug AI → 查看行为树运行状态
+  - 输入: AI.Debug.DisplayAIPerception → 查看感知范围
+  - 输入: AI.Debug.DrawNavMesh → 查看寻路网格
+
+十一、构建顺序建议
+
+第1步: 创建 Content/Found/Monsters/Sabertooth/AI/ 目录结构
+第2步: 创建 BB_Sabertooth (Blackboard) → 添加所有 Key
+第3步: 创建 BP_Sabertooth_AIController → 写 BeginPlay RunBehaviorTree
+第4步: 创建 BP_Sabertooth_Character → 配好网格体/动画蓝图/感知/变量
+第5步: 创建 Task 资产（6个）→ 每个实现 ReceiveExecute
+第6步: 创建 BTD_IsInRange 和 BTD_IsAlive (Decorator)
+第7步: 创建 BTS_Sabertooth_UpdatePerception (Service)
+第8步: 创建 BT_Sabertooth (BehaviorTree) → 用编辑器搭树
+第9步: 在关卡中测试 + 调试
+第10步: 调参（距离、伤害、速度、冷却时间）
