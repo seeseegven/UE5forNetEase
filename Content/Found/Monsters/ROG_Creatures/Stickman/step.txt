@@ -1,0 +1,343 @@
+Stickman（火柴人）— 行为树构建完整步骤
+
+【概述】
+角色定位：人形基础近战敌人，适合作为第一个实现的行为树怪物
+现有资产：骨骼网格(SK_Stickman + SKEL_Stickman + SM_Stickman)、
+          动画蓝图(ABP_Stickman)、物理资产(PHYS_Stickman)、
+          闲置/行走/两种攻击/死亡/观望/休息/嘲讽/受击(5方向)/左右转身动画、
+          行走混合空间(BS_Stickman_Walk)、攻击蒙太奇(AM_Stickman_Attack_01/02)、
+          死亡蒙太奇(AM_Stickman_Death)、四种材质实例
+缺失资产：Character BP、AIController、Blackboard、BehaviorTree、Task、Decorator
+
+一、创建资产清单
+
+需在 Content/Found/Monsters/ROG_Creatures/Stickman/ 下创建：
+
+Stickman/
+├── Animations/                          # 原有
+│   ├── ABP_Stickman.uasset              # 原有
+│   ├── A_Stickman_Idle.uasset           # 原有
+│   ├── A_Stickman_Walk.uasset           # 原有
+│   ├── BS_Stickman_Walk.uasset          # 原有
+│   ├── A_Stickman_Attack_01.uasset      # 原有
+│   ├── AM_Stickman_Attack_01.uasset     # 原有（蒙太奇）
+│   ├── A_Stickman_Attack_02.uasset      # 原有
+│   ├── AM_Stickman_Attack_02.uasset     # 原有（蒙太奇）
+│   ├── A_Stickman_Death.uasset          # 原有
+│   ├── AM_Stickman_Death.uasset         # 原有（蒙太奇）
+│   ├── A_Stickman_Look.uasset           # 原有
+│   ├── A_Stickman_Rest.uasset           # 原有
+│   ├── A_Stickman_Taunt.uasset          # 原有
+│   ├── A_Stickman_hit_back.uasset       # 原有
+│   ├── A_Stickman_hit_body_left.uasset  # 原有
+│   ├── A_Stickman_hit_body_right.uasset # 原有
+│   ├── A_Stickman_hit_head_left.uasset  # 原有
+│   ├── A_Stickman_hit_head_right.uasset # 原有
+│   ├── A_Stickman_rig_Anim.uasset       # 原有
+│   ├── A_Stickman_TOS_left.uasset       # 原有
+│   └── A_Stickman_TOS_right.uasset      # 原有
+├── Blueprints/                          # ★新建目录
+│   ├── BP_Stickman_Character.uasset     # ★新建：Character
+│   └── BP_Stickman_AIController.uasset  # ★新建：AIController
+├── AI/                                  # ★新建目录
+│   ├── BB_Stickman.uasset              # ★新建：Blackboard
+│   ├── BT_Stickman.uasset              # ★新建：BehaviorTree
+│   ├── Tasks/                           # ★新建目录
+│   │   ├── BTT_Stickman_Attack01.uasset
+│   │   ├── BTT_Stickman_Attack02.uasset
+│   │   ├── BTT_Stickman_PatrolGetPoint.uasset
+│   │   ├── BTT_Stickman_SetState.uasset
+│   │   ├── BTT_Stickman_PlayAnimWithNotify.uasset
+│   │   └── BTT_Stickman_ChooseAttack.uasset
+│   └── Decorators/                      # ★新建目录
+│       ├── BTD_IsInRange.uasset
+│       └── BTD_CheckState.uasset
+├── Materials/                           # 原有
+├── Meshes/                              # 原有
+├── Textures/                            # 原有
+└── Maps/                                # 原有
+    └── ROG_Stickman_Overview.umap       # 原有（概述关卡，可用来测试）
+
+共需创建 12 个新资产。
+
+二、Blackboard 设计（BB_Stickman）
+
+Key Name          | 类型           | 初始值    | 说明
+------------------|----------------|-----------|------------------------------
+TargetActor       | Object (Actor) | None      | 攻击目标（玩家）
+MoveLocation      | Vector         | (0,0,0)   | 移动目的地
+MonsterState      | Enum (UInt8)   | 0 (Idle)  | 行为状态
+AlertLocation     | Vector         | (0,0,0)   | 警觉位置（听到声音/看到的位置）
+AttackRange       | Float          | 180.0     | 攻击触发距离
+ChaseRange        | Float          | 1500.0    | 开始追击的距离（丢失目标延迟距离）
+CanAttack         | Bool           | true      | 是否可以攻击
+IsDead            | Bool           | false     | 是否死亡
+IsAlert           | Bool           | false     | 是否警觉状态
+HomeLocation      | Vector         | (0,0,0)   | 出生/巡逻原点
+PatrolRadius      | Float          | 800.0     | 巡逻半径
+PatrolWaitMin     | Float          | 1.5       | 巡逻点最小等待
+PatrolWaitMax     | Float          | 4.0       | 巡逻点最大等待
+AttackCooldown    | Float          | 1.5       | 攻击冷却
+DestructibleObject| Object (Actor) | None      | 可破坏物体（增加趣味性）
+
+MonsterState 枚举：
+  0 = Idle（待机）
+  1 = Patrol（巡逻）
+  2 = Alert（警觉/调查）
+  3 = Chase（追击）
+  4 = Attack（攻击中）
+  5 = Hurt（受击）
+  6 = Dead（死亡）
+
+三、行为树结构（BT_Stickman）
+
+Root
+└── Selector（优先级从左到右）
+    │
+    ├── [1] Sequence ── 死亡处理（最高优先级）
+    │   ├── Decorator: Blackboard IsDead == true
+    │   ├── [Task] Stop Movement
+    │   ├── [Task] SetState → 6 (Dead)
+    │   ├── [Task] Play Montage: AM_Stickman_Death
+    │   │   注意：AM_Stickman_Death 已存在，直接使用
+    │   ├── [Task] Wait: 4.0s（尸体停留）
+    │   └── [Task] 关闭碰撞、隐藏、延迟10s销毁
+    │
+    ├── [2] Sequence ── 受击反应
+    │   ├── Decorator: 刚受到伤害（需要 BP_Stickman_Character 设置 HurtTriggered bool）
+    │   ├── [Service] 每0.1s重置 HurtTriggered
+    │   ├── [Task] SetState → 5 (Hurt)
+    │   ├── [Task] 根据伤害来源方向选择受击动画：
+    │   │   获取 Attacker 位置 → 计算与自己的相对方向(前方/后方/左/右/头左/头右)
+    │   │   → 选择: hit_back / hit_body_left / hit_body_right / hit_head_left / hit_head_right
+    │   │   → Play Montage: A_Stickman_hit_xxx（这些是动画序列，先转为 Montage）
+    │   ├── [Task] Wait: 0.6s（受击硬直）
+    │   └── [Task] 恢复状态: HurtTriggered = false, IsAlert = false
+    │
+    ├── [3] Selector ── 战斗行为（有目标）
+    │   ├── Decorator: Blackboard TargetActor != None
+    │   │
+    │   ├── [Service] BTS_UpdateDistance（每0.2s更新距离感知）
+    │   │
+    │   ├── [4] Sequence ── 在攻击范围内 → 攻击
+    │   │   ├── Decorator: IsInRange(TargetActor, AttackRange)
+    │   │   ├── [Task] Stop Movement
+    │   │   ├── [Task] RotateToFace: TargetActor
+    │   │   ├── [Task] SetState → 4 (Attack)
+    │   │   ├── [Task] BTT_Stickman_ChooseAttack（随机选择 Attack01 或 Attack02）
+    │   │   │   ├── 50% → BTT_Stickman_Attack01
+    │   │   │   │   Play Montage: AM_Stickman_Attack_01
+    │   │   │   │   AnimNotify 触发伤害
+    │   │   │   └── 50% → BTT_Stickman_Attack02
+    │   │   │       Play Montage: AM_Stickman_Attack_02
+    │   │   │       AnimNotify 触发伤害
+    │   │   ├── [Task] Wait: AttackCooldown (1.5s)
+    │   │   └── [Decorator] 如果 TargetActor 超出攻击范围 → 中断
+    │   │
+    │   ├── [5] Sequence ── 在追击范围内 → 追过去
+    │   │   ├── Decorator: IsInRange(TargetActor, ChaseRange)
+    │   │   ├── [Task] SetState → 3 (Chase)
+    │   │   └── [Task] MoveTo: TargetActor
+    │   │       AcceptableRadius = AttackRange * 0.8
+    │   │
+    │   └── [6] Sequence ── 目标太远 → 丢失目标
+    │       ├── [Task] SetState → 2 (Alert)
+    │       ├── [Task] Wait: 3.0s（等待3秒看看会不会回来）
+    │       ├── [Task] 如果仍无目标 → Clear TargetActor → 恢复巡逻
+    │       └── [Task] Set IsAlert = true
+    │
+    ├── [7] Sequence ── 警觉调查（刚被惊动但没找到目标）
+    │   ├── Decorator: Blackboard IsAlert == true
+    │   ├── [Task] SetState → 2 (Alert)
+    │   ├── [Task] MoveTo: AlertLocation（跑向上次发现异常的位置）
+    │   ├── [Task] RotateToFace: AlertLocation
+    │   ├── [Task] Play Animation: A_Stickman_Look（观望动画）
+    │   ├── [Task] Wait: 2.0s
+    │   ├── [Task] Play Animation: A_Stickman_Taunt（可选：嘲讽，像在说"人呢？"）
+    │   ├── [Task] Wait: 1.0s
+    │   ├── [Task] Set IsAlert = false
+    │   └── [Task] 记录 HomeLocation = 当前位置（从此处重新开始巡逻）
+    │
+    ├── [8] Sequence ── 巡逻（无目标、无警觉）
+    │   ├── [Task] SetState → 1 (Patrol)
+    │   ├── [Task] BTT_Stickman_PatrolGetPoint：
+    │   │   获取随机可到达点(HomeLocation, PatrolRadius)
+    │   │   → 写入 MoveLocation
+    │   ├── [Task] MoveTo: MoveLocation
+    │   ├── [Task] RotateToFace: MoveLocation
+    │   ├── [Selector] 到达后随机表演：
+    │   │   ├── 30% → Play Anim: A_Stickman_Rest（休息一下）
+    │   │   ├── 20% → Play Anim: A_Stickman_Taunt（嘲讽）
+    │   │   └── 50% → 跳过（直接 Wait）
+    │   ├── [Task] Wait: Random(PatrolWaitMin, PatrolWaitMax)
+    │   └── Loop back
+    │
+    └── [9] Sequence ── 默认待机
+        ├── [Task] SetState → 0 (Idle)
+        ├── [Task] Play Animation: A_Stickman_Idle
+        └── [Task] Wait: 0.5s
+
+四、关键 Task 详细设计
+
+【BTT_Stickman_Attack01 / Attack02】两种攻击
+  事件: Receive Execute AI
+  1. 选择 Montage: AM_Stickman_Attack_01 或 AM_Stickman_Attack_02
+  2. 播放 Montage
+  3. 绑定 OnMontageEnded
+  4. 在 AnimNotify 触发伤害：
+     - SphereOverlapActors(Pawn位置, AttackRange)
+     - 过滤: 玩家角色
+     - ApplyDamage(AttackDamage)
+  5. Montage 结束 → Finish Execute
+
+  【重要提示】如果现有的 AM_Stickman_Attack_01/02 蒙太奇中还没有 AnimNotify：
+    1. 双击打开 AM_Stickman_Attack_01
+    2. 在攻击挥击关键帧位置，右键 Notify Track → Add Notify → 新建 Notify
+    3. 命名为 AN_Stickman_AttackDamage
+    4. 在 AnimBlueprint 或通过 C++ 创建对应的 Notify 类来处理伤害
+    5. 或者直接在 Task 中用 Timer 延迟触发（简单但不精确）
+
+  【蓝图简化方案】
+    如果不想碰 AnimNotify，可以在 Task 中：
+    - PlayMontage(AttackMontage) → 获取 Montage 总时长
+    - SetTimer(时长 * 0.6, 伤害函数) // 在大约60%帧时触发伤害
+    - 伤害函数: 检测范围 + ApplyDamage
+    但这种方式精确度不如 AnimNotify
+
+【BTT_Stickman_PatrolGetPoint】获取巡逻点
+  事件: Receive Execute AI
+  1. 读取 HomeLocation + PatrolRadius（从 Blackboard）
+  2. 调用 UNavigationSystemV1::GetRandomReachablePointInRadius(
+        Origin: HomeLocation,
+        Radius: PatrolRadius
+     )
+  3. 如果找到 → 写入 MoveLocation → Finish Execute(Success)
+  4. 如果失败 → 等待0.5s后重试
+
+  【UE蓝图节点】
+    - GetNavigationSystem → GetRandomReachablePointInRadius
+
+【BTT_Stickman_ChooseAttack】随机选择攻击方式
+  事件: Receive Execute AI
+  1. RandomFloat(0.0, 1.0)
+  2. 如果 <= 0.5 → Execute Task: BTT_Stickman_Attack01
+  3. 否则 → Execute Task: BTT_Stickman_Attack02
+  4. 或者用 Composite 在 BT 中直接用 Random Selector
+
+  注意：行为树本身有 Random 类型的 Selector 节点，
+  可以直接在 BT 编辑器中这样做，不需要单独的 ChooseAttack Task！
+
+【BTT_Stickman_SetState】设置状态
+  重用通用 SetState Task（也可创建通用的在 Common/ 目录）
+
+【BTT_Stickman_PlayAnimWithNotify】播放动画+通知
+  可用于 Look/Rest/Taunt 等非攻击动画，只需要播放不需要伤害检测
+
+五、BP_Stickman_Character 关键配置
+
+【组件】
+  - SkeletalMesh: SK_Stickman（或 SKEL_Stickman，通常用骨骼网格）
+  - AnimClass: ABP_Stickman
+  - CapsuleComponent: 默认
+  - AIPerceptionComponent: 添加
+  - CharacterMovementComponent: 默认
+
+【变量】
+  - Health: Float = 80.0
+  - MaxHealth: Float = 80.0
+  - AttackDamage: Float = 10.0
+  - MoveSpeed_Patrol: Float = 200.0
+  - MoveSpeed_Chase: Float = 450.0
+  - bIsHurt: Bool = false（用于行为树受击分支）
+  - HurtTriggered: Bool = false（最近是否受到伤害）
+
+【AIPerceptionComponent 配置】
+  AI Sight Config:
+    - Sight Radius: 1200.0（中等视野，比Sabertooth小）
+    - Lose Sight Radius: 1500.0
+    - Peripheral Vision Half Angle: 60°（正面视野锥）
+  AI Hearing Config:
+    - Hearing Range: 1000.0
+
+【接口实现】
+  - BPI_Damageable: ApplyDamage → Health减少 → 触发Hurt → Health<=0 → IsDead=true
+  - BPI_Attacker（可选）: 提供统一的攻击入口
+
+六、BP_Stickman_AIController 配置
+
+【Class Defaults】
+  AI → Behavior Tree: BT_Stickman
+
+【Event Graph】
+  Event BeginPlay:
+    1. RunBehaviorTree(BT_Stickman)
+    2. Super::BeginPlay 后 → Delay(0.2s) →
+       Blackboard → HomeLocation = ControlledPawn.WorldLocation
+       （让巡逻从放置位置开始）
+
+    或更简单：在 BP_Stickman_Character 的 BeginPlay 中
+    直接设置 Blackboard HomeLocation:
+       GetAIController → GetBlackboardComponent → SetValueAsVector(HomeLocation, GetActorLocation())
+
+七、独特设计要点（与Sabertooth的差异）
+
+1.【表现型动画丰富】Stickman 的最大特色是有 Look、Rest、Taunt 等非战斗动画。
+   这些非常适合做巡逻中的"调味料"，让怪物看起来有"生活感"。
+   实现方式：巡逻到达后 → Random Selector → 概率选择 Rest/Taunt/Idle
+
+2.【警觉系统】Stickman 设计了 IsAlert 机制：听到声音/看到玩家又丢失时，
+   会跑过去查看，播放 Look 观望，再 Taunt 嘲讽，然后回到巡逻。
+   这让 AI 看起来更"聪明"——有一定调查行为，而非直接忘掉。
+
+3.【受击方向选择】Stickman 有5个方向的受击动画（前/后/体左/体右/头左/头右），
+   这是三只怪物中独一无二的。实现：
+   - 获取伤害来源位置
+   - 计算 (来源 - 自己) 的相对方向向量
+   - 用 GetDotProductTo 判断前/后
+   - 用叉积判断左/右
+   - 选对应动画播放
+
+4.【最低血量】Stickman 是"杂兵"型怪物，血量低(80)、攻击力低(10)，
+   容易被击杀，适合成群出现。
+
+5.【第一个实现】因为动画最齐全（连蒙太奇都做好了），Stickman 是最容易
+   跑通第一个行为树的怪物。建议先在这里验证整个流程。
+
+八、建议的蒙太奇预处理
+
+部分动画是 Animation Sequence（A_Stickman_hit_xxx），需要转为 Montage 才能在行为树中播放：
+
+  1. 在 Content Browser 右键 A_Stickman_hit_back → Create → Animation Montage
+  2. 目标 Skeleton: SKEL_Stickman 对应的骨骼
+  3. 保存为 AM_Stickman_hit_back
+  4. 对 hit_body_left, hit_body_right, hit_head_left, hit_head_right 重复
+  5. 同样对 Look, Rest, Taunt 也创建 Montage（或直接用 Play Animation As Montage 节点）
+
+  【简化做法】在 Task 中可以用 "Play Animation As Montage" 节点，
+  直接传入 Animation Sequence，UE 会自动生成临时的 Dynamic Montage。
+  但推荐提前创建好 Montage 资产，方便管理和添加 Notify。
+
+九、关卡集成
+
+Stickman 的概述关卡已存在: Content/Found/Monsters/ROG_Creatures/Stickman/Maps/ROG_Stickman_Overview.umap
+
+可直接在这个关卡中：
+  1. 放置 Nav Mesh Bounds Volume
+  2. 拖入 BP_Stickman_Character
+  3. 按 P 检查 NavMesh
+  4. 运行测试
+
+或者在新关卡中测试。多个 Stickman 可以放一堆，测试群架效果。
+
+十、构建顺序（推荐作为第一个实现）
+
+第1步: 处理动画蒙太奇（hit 动画转 Montage）
+第2步: 创建 BB_Stickman (Blackboard) → 添加所有 Key
+第3步: 创建 BP_Stickman_AIController → 配行为树
+第4步: 创建 BP_Stickman_Character → 网格体 + 动画蓝图 + 感知 + 变量
+第5步: 创建 Task (Attack01/02, PatrolGetPoint, SetState, PlayAnim)
+第6步: 创建 BTD_IsInRange Decorator
+第7步: 创建 BT_Stickman (BehaviorTree) → 搭树
+第8步: 在 ROG_Stickman_Overview 关卡测试
+第9步: 调试受击方向选择逻辑
+第10步: 调参（距离、伤害、巡逻范围）
