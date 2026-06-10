@@ -1,0 +1,8 @@
+MonsterState 枚举：
+  0 = Idle（待机）
+  1 = Patrol（巡逻）
+  2 = Alert（警觉/调查）
+  3 = Chase（追击）
+  4 = Attack（攻击中）
+  5 = Hurt（受击）
+  6 = Dead（死亡）
