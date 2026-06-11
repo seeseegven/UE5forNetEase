@@ -84,10 +84,10 @@ protected:
 	TSubclassOf<UDamageType> DamageTypeClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug")
-	bool bDrawDebugCircle = true;
+	bool bDrawDebugCircle = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug")
-	bool bDrawDebugTargetCircle = true;
+	bool bDrawDebugTargetCircle = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Poison Circle|Debug", meta = (ClampMin = "8"))
 	int32 DebugSegments = 96;
